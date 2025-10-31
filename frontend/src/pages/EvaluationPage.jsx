@@ -1,12 +1,18 @@
-import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import api from '@/lib/axios';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Progress } from '@/components/ui/progress';
-import { ArrowLeft, Star, TrendingUp, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { toast } from 'sonner';
+import React, { useState, useEffect } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import api from "@/lib/axios";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import {
+  ArrowLeft,
+  Star,
+  TrendingUp,
+  AlertCircle,
+  CheckCircle2,
+} from "lucide-react";
+import { toast } from "sonner";
 
 const EvaluationPage = ({ user }) => {
   const { interviewId } = useParams();
@@ -20,28 +26,30 @@ const EvaluationPage = ({ user }) => {
 
   const fetchEvaluation = async () => {
     try {
-      const response = await api.get(`/api/interviews/${interviewId}/evaluation`);
+      const response = await api.get(
+        `/api/interviews/${interviewId}/evaluation`
+      );
       setEvaluation(response.data);
     } catch (error) {
-      console.error('Failed to fetch evaluation:', error);
-      toast.error('Failed to load evaluation');
+      console.error("Failed to fetch evaluation:", error);
+      toast.error("Failed to load evaluation");
     } finally {
       setLoading(false);
     }
   };
 
   const getScoreColor = (score) => {
-    if (score >= 8) return 'text-green-600';
-    if (score >= 6) return 'text-blue-600';
-    if (score >= 4) return 'text-yellow-600';
-    return 'text-red-600';
+    if (score >= 80) return "text-green-600";
+    if (score >= 60) return "text-blue-600";
+    if (score >= 40) return "text-yellow-600";
+    return "text-red-600";
   };
 
   const getProgressColor = (score) => {
-    if (score >= 8) return 'bg-green-500';
-    if (score >= 6) return 'bg-blue-500';
-    if (score >= 4) return 'bg-yellow-500';
-    return 'bg-red-500';
+    if (score >= 80) return "bg-green-500";
+    if (score >= 60) return "bg-blue-500";
+    if (score >= 40) return "bg-yellow-500";
+    return "bg-red-500";
   };
 
   if (loading) {
@@ -57,7 +65,9 @@ const EvaluationPage = ({ user }) => {
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
           <p className="text-gray-600 mb-4">Evaluation not found</p>
-          <Button onClick={() => navigate('/dashboard')}>Go to Dashboard</Button>
+          <Button onClick={() => navigate("/dashboard")}>
+            Go to Dashboard
+          </Button>
         </div>
       </div>
     );
@@ -71,7 +81,7 @@ const EvaluationPage = ({ user }) => {
           <div className="flex items-center space-x-4">
             <Button
               data-testid="back-to-dashboard-button"
-              onClick={() => navigate('/dashboard')}
+              onClick={() => navigate("/dashboard")}
               variant="outline"
               size="sm"
             >
@@ -95,14 +105,17 @@ const EvaluationPage = ({ user }) => {
           </CardHeader>
           <CardContent>
             <div className="flex flex-col items-center">
-              <div className="text-7xl font-bold mb-4" data-testid="overall-score">
+              <div
+                className="text-7xl font-bold mb-4"
+                data-testid="overall-score"
+              >
                 <span className={getScoreColor(evaluation.overall_score)}>
-                  {evaluation.overall_score.toFixed(1)}
+                  {Math.round(evaluation.overall_score)}
                 </span>
-                <span className="text-3xl text-gray-400">/10</span>
+                <span className="text-3xl text-gray-400">/100</span>
               </div>
               <Progress
-                value={evaluation.overall_score * 10}
+                value={evaluation.overall_score}
                 className="w-full max-w-md h-4"
               />
             </div>
@@ -119,12 +132,16 @@ const EvaluationPage = ({ user }) => {
               <div data-testid="communication-score">
                 <div className="flex justify-between mb-2">
                   <span className="font-medium">Communication Skills</span>
-                  <span className={`font-bold ${getScoreColor(evaluation.communication_score)}`}>
-                    {evaluation.communication_score.toFixed(1)}/10
+                  <span
+                    className={`font-bold ${getScoreColor(
+                      evaluation.communication_score
+                    )}`}
+                  >
+                    {Math.round(evaluation.communication_score)}/100
                   </span>
                 </div>
                 <Progress
-                  value={evaluation.communication_score * 10}
+                  value={evaluation.communication_score}
                   className="h-3"
                 />
               </div>
@@ -132,25 +149,30 @@ const EvaluationPage = ({ user }) => {
               <div data-testid="technical-score">
                 <div className="flex justify-between mb-2">
                   <span className="font-medium">Technical Knowledge</span>
-                  <span className={`font-bold ${getScoreColor(evaluation.technical_score)}`}>
-                    {evaluation.technical_score.toFixed(1)}/10
+                  <span
+                    className={`font-bold ${getScoreColor(
+                      evaluation.technical_score
+                    )}`}
+                  >
+                    {Math.round(evaluation.technical_score)}/100
                   </span>
                 </div>
-                <Progress
-                  value={evaluation.technical_score * 10}
-                  className="h-3"
-                />
+                <Progress value={evaluation.technical_score} className="h-3" />
               </div>
 
               <div data-testid="problem-solving-score">
                 <div className="flex justify-between mb-2">
                   <span className="font-medium">Problem Solving</span>
-                  <span className={`font-bold ${getScoreColor(evaluation.problem_solving_score)}`}>
-                    {evaluation.problem_solving_score.toFixed(1)}/10
+                  <span
+                    className={`font-bold ${getScoreColor(
+                      evaluation.problem_solving_score
+                    )}`}
+                  >
+                    {Math.round(evaluation.problem_solving_score)}/100
                   </span>
                 </div>
                 <Progress
-                  value={evaluation.problem_solving_score * 10}
+                  value={evaluation.problem_solving_score}
                   className="h-3"
                 />
               </div>
@@ -219,7 +241,10 @@ const EvaluationPage = ({ user }) => {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-gray-800 leading-relaxed whitespace-pre-wrap" data-testid="detailed-feedback">
+            <p
+              className="text-gray-800 leading-relaxed whitespace-pre-wrap"
+              data-testid="detailed-feedback"
+            >
               {evaluation.detailed_feedback}
             </p>
           </CardContent>
@@ -237,7 +262,7 @@ const EvaluationPage = ({ user }) => {
           </Button>
           <Button
             data-testid="new-interview-button"
-            onClick={() => navigate('/dashboard')}
+            onClick={() => navigate("/dashboard")}
             className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-6 py-3"
           >
             Start New Interview
