@@ -122,6 +122,6 @@ websockets==15.0.1
 yarl==1.22.0
 zipp==3.23.0
 
-# Added for local NLP trainer (sentence embeddings + nearest neighbors)
-sentence-transformers==2.2.2
-scikit-learn==1.3.2
+# Custom NLP+KNN Model (NO pre-trained models)
+# Only numpy is required - all NLP and ML components built from scratch
+# numpy already listed above at version 2.3.3

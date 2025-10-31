@@ -417,9 +417,9 @@ async def create_interview(request: CreateInterviewRequest, session_token: Optio
     
     # Send initial AI message
     initial_prompts = {
-        "technical": "Hello! I'm your AI interviewer for today's technical interview. I'll be asking you questions about programming, algorithms, data structures, and problem-solving. Let's start with: Can you tell me about your experience with software development?",
-        "behavioral": "Hello! I'm your AI interviewer for this behavioral interview. I'll ask questions about your work experience, teamwork, and how you handle various situations. Let's begin: Tell me about a challenging project you worked on and how you approached it.",
-        "general": "Hello! Welcome to your interview session. I'll be asking you a variety of questions to understand your background, skills, and experiences. Let's start: Could you give me a brief introduction about yourself and your career goals?"
+        "technical": "Hello! I'm excited to chat with you today about your technical background and skills. I'll be asking questions about programming, algorithms, system design, and your problem-solving approach. To get us started, could you tell me about a recent technical project you're proud of and what technologies you used?",
+        "behavioral": "Hi there! Thanks for taking the time to interview today. I'm interested in learning about your work experiences and how you approach various workplace situations. Let's begin with this: Can you tell me about a time when you had to overcome a significant challenge at work? What was the situation and how did you handle it?",
+        "general": "Welcome! I'm glad we have this opportunity to get to know each other. I'll be asking you various questions to understand your background, skills, and what you're looking for in your career. Let's start with an introduction - could you tell me about your professional journey so far and what brings you here today?"
     }
     
     initial_message = Message(
@@ -505,6 +505,10 @@ async def send_message(interview_id: str, request: SendMessageRequest, session_t
         if not interview:
             raise HTTPException(status_code=404, detail="Interview not found")
         
+        # Check if interview is completed or evaluated
+        if interview.get('status') in ['completed', 'evaluated']:
+            raise HTTPException(status_code=400, detail="Cannot send messages to a completed interview")
+        
         # Save user message
         user_message = Message(
             id=str(uuid.uuid4()),
@@ -521,9 +525,55 @@ async def send_message(interview_id: str, request: SendMessageRequest, session_t
         # Build context for AI
         interview_type = interview['interview_type']
         system_messages = {
-            "technical": "You are an experienced technical interviewer. Ask relevant technical questions about programming, algorithms, data structures, system design, and problem-solving. Provide follow-up questions based on responses. Be professional but encouraging.",
-            "behavioral": "You are an experienced HR interviewer conducting a behavioral interview. Ask questions about past experiences, teamwork, conflict resolution, leadership, and how candidates handle challenges. Use the STAR method (Situation, Task, Action, Result) framework.",
-            "general": "You are a professional interviewer. Ask a mix of questions about the candidate's background, skills, experience, and career goals. Be conversational and professional."
+            "technical": """You are an experienced technical interviewer conducting a real technical interview. 
+Your role is to:
+- Ask relevant technical questions about programming, algorithms, data structures, system design, and problem-solving
+- Analyze the candidate's responses critically and provide thoughtful follow-up questions
+- Vary your responses naturally - sometimes acknowledge good points, sometimes probe deeper, sometimes challenge assumptions
+- Be professional, conversational, and authentic like a real interviewer
+- Adapt your tone based on the candidate's answer quality (encouraging for good answers, probing for incomplete ones)
+- Use varied response patterns: acknowledgments, follow-ups, new questions, requests for clarification, or examples
+- Keep responses concise and natural (2-4 sentences typically)
+
+Response variation examples:
+- "Interesting approach. Have you considered [alternative]?"
+- "That makes sense. Can you walk me through how you'd handle [specific scenario]?"
+- "I see. What trade-offs did you consider?"
+- "Good point. Let me ask you about [related topic]..."
+- "Can you elaborate on [specific part of their answer]?"
+""",
+            "behavioral": """You are an experienced HR interviewer conducting a behavioral interview.
+Your role is to:
+- Ask questions about past experiences, teamwork, conflict resolution, leadership, and challenges
+- Listen carefully to responses and ask natural follow-up questions
+- Use the STAR method (Situation, Task, Action, Result) to guide questioning when appropriate
+- Vary your responses authentically - sometimes empathize, sometimes dig deeper, sometimes move to new topics
+- Be conversational and create a comfortable interview atmosphere
+- Adapt your tone: supportive for personal stories, probing for details, appreciative of insights
+
+Response variation examples:
+- "That sounds challenging. How did the team respond to your decision?"
+- "I appreciate you sharing that. What did you learn from that experience?"
+- "Interesting. Can you tell me more about your specific role in that situation?"
+- "That's a great example. Let's explore another area - [new topic]..."
+- "How did you measure the success of that approach?"
+""",
+            "general": """You are a professional interviewer conducting a comprehensive interview.
+Your role is to:
+- Ask a mix of questions about background, skills, experience, and career goals
+- Create a natural, flowing conversation that feels authentic
+- Vary your responses based on what the candidate shares
+- Be genuinely interested and conversational
+- Transition smoothly between topics
+- Mix acknowledgments, follow-ups, and new questions naturally
+
+Response variation examples:
+- "That's really interesting. What motivated you to [specific choice they mentioned]?"
+- "I see. How does that align with your long-term career goals?"
+- "Thanks for sharing that background. Let me ask you about [different topic]..."
+- "Great. Can you give me an example of when you used [skill they mentioned]?"
+- "That makes sense. What would you say is your biggest strength in [area]?"
+"""
         }
         
         # Get conversation history
@@ -535,27 +585,261 @@ async def send_message(interview_id: str, request: SendMessageRequest, session_t
                 "content": msg["content"]
             })
         
-        # Check if OpenAI client is available
-        if not openai_client:
+        # Analyze user's message to generate context-aware response
+        user_content = request.content.lower()
+        message_length = len(request.content.split())
+        
+        # Detect answer characteristics for intelligent response generation
+        answer_characteristics = {
+            "is_detailed": message_length > 30,
+            "is_brief": message_length < 10,
+            "mentions_example": any(keyword in user_content for keyword in ["example", "instance", "time when", "once", "project"]),
+            "mentions_technology": any(tech in user_content for tech in ["python", "javascript", "java", "react", "node", "sql", "api", "database", "algorithm", "framework", "library"]),
+            "mentions_team": any(keyword in user_content for keyword in ["team", "colleague", "coworker", "manager", "collaborate"]),
+            "mentions_challenge": any(keyword in user_content for keyword in ["challenge", "difficult", "problem", "issue", "struggle", "obstacle"]),
+            "mentions_success": any(keyword in user_content for keyword in ["success", "achieved", "accomplished", "improved", "solved"]),
+            "shows_uncertainty": any(phrase in user_content for phrase in ["i think", "maybe", "not sure", "probably", "i guess"]),
+            "asks_clarification": "?" in request.content
+        }
+        
+        # First, try NLP model if enabled and available (for learned responses)
+        ai_response = None
+        if os.environ.get("USE_NLP_RESPONSES") == "1" and trainer is not None:
+            try:
+                logger.info("Attempting to use NLP model for response")
+                nlp_result = trainer.get_best_response(request.content, confidence_threshold=0.6)
+                if "error" not in nlp_result or nlp_result.get("warning"):
+                    confidence = nlp_result.get("confidence", 0)
+                    if confidence >= 0.6:
+                        ai_response = nlp_result["response"]
+                        logger.info(f"Using NLP response with {confidence:.2%} confidence")
+                    else:
+                        logger.info(f"NLP confidence ({confidence:.2%}) below threshold, trying other methods")
+                else:
+                    logger.info("NLP model returned error, trying other methods")
+            except Exception as e:
+                logger.warning(f"Failed to get NLP response: {e}")
+        
+        # If NLP didn't provide a response, check if OpenAI client is available
+        if not ai_response and not openai_client:
             logger.error("OpenAI client not configured")
             # Use fallback mock response for development/testing
-            logger.warning("Using mock AI response - configure OPENAI_API_KEY or EMERGENT_LLM_KEY for real AI")
-            mock_responses = [
-                "That's an interesting point. Could you elaborate on your experience with that?",
-                "Great answer! Let me ask you another question: How do you approach problem-solving in challenging situations?",
-                "I see. Can you provide a specific example from your past experience?",
-                "Thank you for sharing that. What would you say are your key strengths in this area?",
-                "Interesting perspective. How do you handle feedback and criticism?",
-                "That's good to know. Can you walk me through your thought process when tackling complex problems?"
-            ]
-            # Simple selection based on message count
-            messages_count = len(conversation_history)
-            ai_response = mock_responses[messages_count % len(mock_responses)]
-            logger.info("Generated mock AI response")
-        else:
-            # Generate AI response using OpenAI
+            logger.warning("Using intelligent mock AI response - configure OPENAI_API_KEY or EMERGENT_LLM_KEY for real AI")
+            
+            # Generate intelligent context-aware mock responses with variety
+            import random
+            
+            def generate_intelligent_response(interview_type, characteristics, user_msg, conv_count):
+                """Generate responses that actually react to user's message content with variety"""
+                
+                # Extract specific words from user message
+                words = user_msg.split()
+                key_words = [w for w in words if len(w) > 4][:3]
+                
+                if interview_type == "technical":
+                    responses = []
+                    if characteristics["is_brief"]:
+                        responses = [
+                            "I need more detail - what was your specific implementation?",
+                            "Could you walk me through the technical approach you took?",
+                            "Expand on that. What technologies did you use and why?"
+                        ]
+                    elif characteristics["shows_uncertainty"]:
+                        responses = [
+                            "Let's break this down step by step. Where would you start?",
+                            "Think through the problem architecture. What components do you need?",
+                            "No wrong answers here - what's your initial approach?"
+                        ]
+                    elif characteristics["mentions_technology"]:
+                        tech_word = key_words[0] if key_words else "that technology"
+                        responses = [
+                            f"What made {tech_word} the right choice over alternatives?",
+                            f"How did you handle scalability with {tech_word}?",
+                            f"What challenges did {tech_word} introduce to your stack?"
+                        ]
+                    elif characteristics["mentions_example"]:
+                        responses = [
+                            "Walk me through the architecture decisions you made there.",
+                            "What was the trickiest part of that implementation?",
+                            "How did you test and validate that solution?"
+                        ]
+                    elif characteristics["is_detailed"]:
+                        responses = [
+                            "How would this perform under 100x load?",
+                            "What monitoring did you put in place?",
+                            "What would you refactor if you rebuilt this today?"
+                        ]
+                    else:
+                        responses = [
+                            "Describe the data flow in that system.",
+                            f"What assumptions did you make about {key_words[0] if key_words else 'the requirements'}?",
+                            "How did you ensure code quality and maintainability?"
+                        ]
+                    return random.choice(responses)
+                
+                elif interview_type == "behavioral":
+                    responses = []
+                    if characteristics["is_brief"]:
+                        responses = [
+                            "Walk me through the full story - situation, actions, and outcome.",
+                            "I need specifics. What exactly did you do in that scenario?",
+                            "Give me more context about the situation and your role."
+                        ]
+                    elif characteristics["mentions_team"]:
+                        responses = [
+                            "How did you handle conflicts or disagreements in the team?",
+                            "What was your strategy for keeping everyone aligned?",
+                            "Tell me about a time when the team dynamic was challenging."
+                        ]
+                    elif characteristics["mentions_challenge"]:
+                        responses = [
+                            "What did that experience teach you professionally?",
+                            "How has that shaped how you approach similar situations now?",
+                            "Looking back, what would you have done differently?"
+                        ]
+                    elif characteristics["mentions_success"]:
+                        responses = [
+                            "How did you measure that success quantitatively?",
+                            "What was the business impact of that achievement?",
+                            "What made you successful where others might have failed?"
+                        ]
+                    elif characteristics["mentions_example"]:
+                        responses = [
+                            "What would you change if you faced that situation again?",
+                            "How do you apply those learnings in your current work?",
+                            "What was the lasting impact of that experience?"
+                        ]
+                    elif characteristics["is_detailed"]:
+                        responses = [
+                            "What patterns do you see across your experiences?",
+                            "How do you prioritize when faced with competing demands?",
+                            f"How does your approach to {key_words[0] if key_words else 'this'} differ from your peers?"
+                        ]
+                    else:
+                        responses = [
+                            "Give me a concrete example that illustrates that.",
+                            "Describe a time when that skill was critical to success.",
+                            "How have you developed this strength over time?"
+                        ]
+                    return random.choice(responses)
+                
+                else:  # general
+                    responses = []
+                    if characteristics["is_brief"]:
+                        responses = [
+                            "Tell me more - what specifically interests you about that?",
+                            "Help me understand what drives your passion for this.",
+                            "What aspect of that is most meaningful to you?"
+                        ]
+                    elif characteristics["asks_clarification"]:
+                        responses = [
+                            "Good question! I'm trying to understand what motivates your career choices.",
+                            "Let me clarify - I want to know about your professional journey and goals.",
+                            "To rephrase: what experiences have shaped your career direction?"
+                        ]
+                    elif characteristics["mentions_technology"] or characteristics["mentions_example"]:
+                        responses = [
+                            f"How does {key_words[0] if key_words else 'that experience'} connect to your future goals?",
+                            "What skills from that are you most excited to develop further?",
+                            "Where do you want to take that expertise next?"
+                        ]
+                    elif characteristics["is_detailed"]:
+                        responses = [
+                            "What are you most passionate about in your field?",
+                            "How do you stay current with industry developments?",
+                            "What type of impact do you want to make in your career?"
+                        ]
+                    else:
+                        responses = [
+                            "Where do you see yourself in 3-5 years?",
+                            "What kind of challenges excite you most?",
+                            f"How does {key_words[0] if key_words else 'this'} fit into your career vision?"
+                        ]
+                    return random.choice(responses)
+            
+            ai_response = generate_intelligent_response(interview_type, answer_characteristics, request.content, conversation_count)
+            logger.info(f"Generated intelligent mock response based on answer characteristics")
+        elif not ai_response and openai_client:
+            # Generate AI response using OpenAI with content-aware context
+            conversation_count = len([msg for msg in conversation_history if msg["role"] == "user"])
+            
+            # Extract previous assistant responses to avoid repetition
+            previous_responses = [msg["content"] for msg in conversation_history if msg["role"] == "assistant"]
+            previous_response_text = " | ".join(previous_responses[-3:]) if previous_responses else ""
+            
+            # Build intelligent context based on answer analysis
+            context_hints = []
+            if answer_characteristics["is_brief"]:
+                context_hints.append("The candidate gave a brief answer - encourage them to elaborate with specific details")
+            if answer_characteristics["is_detailed"]:
+                context_hints.append("The candidate provided a detailed response - acknowledge depth and probe specific technical/situational aspects")
+            if answer_characteristics["mentions_example"]:
+                context_hints.append("They provided an example - dig into the specifics, decision-making process, and outcomes")
+            if answer_characteristics["mentions_technology"]:
+                context_hints.append("They mentioned specific technologies - explore technical choices, trade-offs, and alternatives")
+            if answer_characteristics["mentions_team"]:
+                context_hints.append("They discussed teamwork - explore collaboration dynamics, communication strategies, and conflict resolution")
+            if answer_characteristics["mentions_challenge"]:
+                context_hints.append("They described a challenge - explore problem-solving methodology, obstacles faced, and lessons learned")
+            if answer_characteristics["mentions_success"]:
+                context_hints.append("They mentioned success - probe for metrics, impact measurement, and key contributing factors")
+            if answer_characteristics["shows_uncertainty"]:
+                context_hints.append("They seem uncertain - guide them with clarifying questions or provide a framework to structure their thoughts")
+            
+            context_instruction = "\n- ".join(context_hints) if context_hints else "Respond naturally and authentically to their answer"
+            
+            # Extract specific nouns and technical terms from user's response
+            import re
+            words = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b|\b[a-z]{4,}\b', request.content)
+            key_phrases = [w for w in words if len(w) > 4][:5]  # Get up to 5 key phrases
+            
+            # Determine interview stage for appropriate tone
+            if conversation_count <= 2:
+                stage = "opening (explore background and warm up)"
+            elif conversation_count <= 5:
+                stage = "exploration (dig into specific experiences and skills)"
+            elif conversation_count <= 8:
+                stage = "deep-dive (probe technical/behavioral details and edge cases)"
+            else:
+                stage = "closing (synthesize insights and explore final key areas)"
+            
             messages_for_api = [
-                {"role": "system", "content": system_messages.get(interview_type, system_messages["general"])}
+                {"role": "system", "content": system_messages.get(interview_type, system_messages["general"])},
+                {"role": "system", "content": f"""Current interview context (Question #{conversation_count}, Stage: {stage}):
+
+CRITICAL ANTI-REPETITION RULES:
+- Your recent responses were: "{previous_response_text}"
+- You must NOT repeat any similar phrases, questions, or patterns from above
+- NEVER use generic phrases like "Tell me more", "That's interesting", "I see" repeatedly
+- Each response must be COMPLETELY DIFFERENT in structure and wording from previous ones
+
+CONTENT-SPECIFIC REQUIREMENTS:
+- The candidate just said: "{request.content[:200]}..."
+- Key concepts they mentioned: {', '.join(key_phrases) if key_phrases else 'general discussion'}
+- {context_instruction}
+
+RESPONSE GENERATION STRATEGY:
+1. REFERENCE SPECIFICS: Pull exact phrases/technologies/situations from their answer
+2. VARY STRUCTURE: Rotate between these patterns (never use same twice in a row):
+   - Direct technical question: "How would you handle [specific scenario from their answer]?"
+   - Comparative: "What made you choose [X] over [Y alternative]?"
+   - Exploratory: "Walk me through your process for [specific thing they mentioned]"
+   - Challenging: "What if [edge case/complication]? How would that change your approach?"
+   - Reflective: "You mentioned [specific detail] - what impact did that have on [outcome]?"
+   - Probing: "Can you break down [specific technical aspect] in more detail?"
+   - Scenario-based: "Imagine [related scenario] - how would you apply this experience?"
+   
+3. ADAPT TO STAGE: {stage} means your tone should reflect that interview phase
+4. BE SPECIFIC: Replace all generic words with exact references to what they said
+5. SOUND HUMAN: Use natural language, contractions, conversational flow
+6. LENGTH: 2-3 sentences maximum, concise and focused
+
+EXAMPLE TRANSFORMATIONS (what NOT to do → what TO do):
+❌ "Tell me more about that" → ✅ "You mentioned using microservices - what challenges did you face with inter-service communication?"
+❌ "That's interesting" → ✅ "Splitting the monolith must have been risky - how did you manage the migration without downtime?"
+❌ "I see" → ✅ "So your team disagreed on the caching strategy - what data did you use to make the final call?"
+
+Your response must be UNIQUE, SPECIFIC to their answer, and NEVER repeat patterns from your previous responses."""}
             ]
             messages_for_api.extend(conversation_history)
             
@@ -577,12 +861,15 @@ async def send_message(interview_id: str, request: SendMessageRequest, session_t
                     response = await openai_client.chat.completions.create(
                         model=model,
                         messages=messages_for_api,
-                        temperature=0.7,
-                        max_tokens=500
+                        temperature=1.0,  # Maximum creativity for variation
+                        max_tokens=500,
+                        presence_penalty=1.2,  # Very high to prevent topic repetition
+                        frequency_penalty=0.8,  # High to prevent word repetition
+                        top_p=0.92  # Nucleus sampling for diversity
                     )
                     
                     ai_response = response.choices[0].message.content
-                    logger.info(f"Successfully generated response using {model}")
+                    logger.info(f"Successfully generated unique contextual response using {model}")
                     break  # Success, exit the loop
                 except Exception as e:
                     logger.warning(f"Failed with model {model}: {str(e)}")
@@ -591,15 +878,112 @@ async def send_message(interview_id: str, request: SendMessageRequest, session_t
             
             if not ai_response:
                 logger.error(f"All models failed. Last error: {str(last_error)}")
-                # Fallback to mock response instead of failing
-                logger.warning("All AI models failed, using mock response")
-                mock_responses = [
-                    "That's an interesting point. Could you elaborate on your experience with that?",
-                    "Great answer! Let me ask you another question: How do you approach problem-solving in challenging situations?",
-                    "I see. Can you provide a specific example from your past experience?",
-                ]
-                messages_count = len(conversation_history)
-                ai_response = mock_responses[messages_count % len(mock_responses)]
+                # Fallback to intelligent mock response instead of failing
+                logger.warning("All AI models failed, using intelligent context-aware fallback")
+                
+                # Use intelligent response generator with variety
+                import random
+                
+                def generate_intelligent_fallback(interview_type, characteristics, user_msg, conv_count):
+                    """Generate content-aware fallback responses with variation"""
+                    
+                    # Extract specific words from user message
+                    words = user_msg.split()
+                    key_words = [w for w in words if len(w) > 4][:3]
+                    
+                    if interview_type == "technical":
+                        responses = []
+                        if characteristics["is_brief"]:
+                            responses = [
+                                "Could you dive deeper into that? What specific approach did you take?",
+                                "I need more context - walk me through the technical implementation.",
+                                "Expand on that. What were the key technical considerations?"
+                            ]
+                        elif characteristics["mentions_technology"]:
+                            tech_word = key_words[0] if key_words else "that"
+                            responses = [
+                                f"Why {tech_word}? What alternatives did you evaluate?",
+                                f"What challenges did you face working with {tech_word}?",
+                                f"How does {tech_word} fit into your overall architecture?"
+                            ]
+                        elif characteristics["mentions_challenge"]:
+                            responses = [
+                                "What was your debugging process? How did you isolate the issue?",
+                                "Walk me through the root cause analysis you performed.",
+                                "What would you architect differently knowing what you know now?"
+                            ]
+                        elif characteristics["is_detailed"]:
+                            responses = [
+                                "How would you scale this to handle 10x traffic?",
+                                "What metrics did you use to measure performance improvements?",
+                                "What edge cases did you need to handle?"
+                            ]
+                        else:
+                            responses = [
+                                "Describe your testing strategy for this.",
+                                "What trade-offs did you make in your design?",
+                                f"How did you validate that {key_words[0] if key_words else 'your approach'} was the right choice?"
+                            ]
+                        return random.choice(responses)
+                    
+                    elif interview_type == "behavioral":
+                        responses = []
+                        if characteristics["is_brief"]:
+                            responses = [
+                                "Give me the full STAR: situation, task, action, result.",
+                                "What specifically did you do? I want to understand your individual contribution.",
+                                "Set the scene for me - what was the context and what happened?"
+                            ]
+                        elif characteristics["mentions_success"]:
+                            responses = [
+                                "How did you quantify that success? What were the key metrics?",
+                                "Who else contributed to this win, and what was your specific role?",
+                                "What obstacles did you overcome to achieve that result?"
+                            ]
+                        elif characteristics["mentions_team"]:
+                            responses = [
+                                "How did you navigate different opinions within the team?",
+                                "What was your communication strategy with stakeholders?",
+                                "Tell me about a conflict that arose - how did you resolve it?"
+                            ]
+                        elif characteristics["mentions_challenge"]:
+                            responses = [
+                                "What did this teach you about yourself as a professional?",
+                                "How do you apply those lessons in your current role?",
+                                "What would you do differently if you could go back?"
+                            ]
+                        else:
+                            responses = [
+                                "Give me another example that shows this strength.",
+                                f"How does your experience with {key_words[0] if key_words else 'this'} prepare you for larger challenges?",
+                                "What's the most difficult aspect of this that you've had to master?"
+                            ]
+                        return random.choice(responses)
+                    
+                    else:  # general
+                        responses = []
+                        if characteristics["is_brief"]:
+                            responses = [
+                                "Paint me a fuller picture - what drives your interest in this?",
+                                "Elaborate on that. What makes it significant to you?",
+                                "Help me understand the 'why' behind that choice."
+                            ]
+                        elif characteristics["mentions_example"]:
+                            responses = [
+                                f"What did that experience with {key_words[0] if key_words else 'this'} teach you about your career goals?",
+                                "How does that shape what you're looking for in your next role?",
+                                "What skills from that experience are you most eager to apply going forward?"
+                            ]
+                        else:
+                            responses = [
+                                "Where do you see yourself taking this expertise in the next 2-3 years?",
+                                "What aspect of your work energizes you most?",
+                                f"How does {key_words[0] if key_words else 'this'} align with your long-term vision?"
+                            ]
+                        return random.choice(responses)
+                
+                ai_response = generate_intelligent_fallback(interview_type, answer_characteristics, request.content, conversation_count)
+                logger.info(f"Generated intelligent varied fallback response")
         
         # Save AI response
         ai_message = Message(
@@ -650,6 +1034,12 @@ async def complete_interview(interview_id: str, session_token: Optional[str] = C
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found")
     
+    # Check if already completed - if so, just return success (idempotent operation)
+    if interview.get('status') == 'completed' or interview.get('status') == 'evaluated':
+        logger.info(f"Interview {interview_id} already completed, returning success")
+        return {"message": "Interview already completed", "status": interview.get('status')}
+    
+    # Mark interview as completed
     await db.interview_sessions.update_one(
         {"id": interview_id},
         {"$set": {
@@ -658,34 +1048,40 @@ async def complete_interview(interview_id: str, session_token: Optional[str] = C
         }}
     )
     
-    return {"message": "Interview completed"}
+    logger.info(f"Interview {interview_id} marked as completed")
+    
+    return {"message": "Interview completed successfully", "status": "completed"}
 
 @api_router.post("/interviews/{interview_id}/evaluate")
 async def evaluate_interview(interview_id: str, session_token: Optional[str] = Cookie(None), authorization: Optional[str] = Header(None)):
-    user = await get_current_user(session_token, authorization)
-    
-    interview = await db.interview_sessions.find_one(
-        {"id": interview_id, "user_id": user.id},
-        {"_id": 0}
-    )
-    
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
-    
-    # Get all messages
-    messages = await db.messages.find(
-        {"interview_id": interview_id},
-        {"_id": 0}
-    ).sort("timestamp", 1).to_list(1000)
-    
-    # Build conversation for evaluation
-    conversation = "\n".join([
-        f"{msg['role'].upper()}: {msg['content']}" 
-        for msg in messages
-    ])
-    
-    # Generate evaluation using GPT-5
-    eval_prompt = f"""Analyze this interview conversation and provide a comprehensive evaluation.
+    try:
+        user = await get_current_user(session_token, authorization)
+        
+        interview = await db.interview_sessions.find_one(
+            {"id": interview_id, "user_id": user.id},
+            {"_id": 0}
+        )
+        
+        if not interview:
+            raise HTTPException(status_code=404, detail="Interview not found")
+        
+        # Get all messages
+        messages = await db.messages.find(
+            {"interview_id": interview_id},
+            {"_id": 0}
+        ).sort("timestamp", 1).to_list(1000)
+        
+        if not messages or len(messages) < 2:
+            raise HTTPException(status_code=400, detail="Not enough messages to evaluate. Please have at least one exchange.")
+        
+        # Build conversation for evaluation
+        conversation = "\n".join([
+            f"{msg['role'].upper()}: {msg['content']}" 
+            for msg in messages
+        ])
+        
+        # Generate evaluation using GPT
+        eval_prompt = f"""Analyze this interview conversation and provide a comprehensive evaluation.
 
 Interview Type: {interview['interview_type']}
 
@@ -694,66 +1090,96 @@ Conversation:
 
 Provide a detailed evaluation in the following JSON format:
 {{
-    "overall_score": <float between 0-10>,
-    "communication_score": <float between 0-10>,
-    "technical_score": <float between 0-10>,
-    "problem_solving_score": <float between 0-10>,
+    "overall_score": <float between 0-100>,
+    "communication_score": <float between 0-100>,
+    "technical_score": <float between 0-100>,
+    "problem_solving_score": <float between 0-100>,
     "strengths": ["strength 1", "strength 2", "strength 3"],
     "areas_for_improvement": ["area 1", "area 2", "area 3"],
     "detailed_feedback": "<comprehensive feedback paragraph>"
 }}
 
+Note: Scores should be out of 100. Be fair but constructive in your evaluation.
 Provide ONLY the JSON response, no additional text."""
-    
-    # Check if OpenAI client is available
-    if not openai_client:
-        raise HTTPException(status_code=500, detail="OpenAI API key not configured")
-    
-    # Generate evaluation using OpenAI
-    response = await openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are an expert interview evaluator. Provide detailed, constructive feedback in JSON format."},
-            {"role": "user", "content": eval_prompt}
-        ],
-        temperature=0.7,
-        max_tokens=1000,
-        response_format={"type": "json_object"}
-    )
-    
-    eval_response = response.choices[0].message.content
-    
-    # Parse evaluation response
-    import json
-    eval_data = json.loads(eval_response)
-    
-    evaluation = Evaluation(
-        id=str(uuid.uuid4()),
-        interview_id=interview_id,
-        overall_score=eval_data['overall_score'],
-        communication_score=eval_data['communication_score'],
-        technical_score=eval_data['technical_score'],
-        problem_solving_score=eval_data['problem_solving_score'],
-        strengths=eval_data['strengths'],
-        areas_for_improvement=eval_data['areas_for_improvement'],
-        detailed_feedback=eval_data['detailed_feedback']
-    )
-    
-    eval_dict = evaluation.model_dump()
-    eval_dict['created_at'] = eval_dict['created_at'].isoformat()
-    await db.evaluations.insert_one(eval_dict)
-    
-    # Update interview status
-    await db.interview_sessions.update_one(
-        {"id": interview_id},
-        {"$set": {"status": "evaluated"}}
-    )
-    
-    # Return evaluation with ISO formatted datetime
-    eval_response = evaluation.model_dump()
-    eval_response['created_at'] = eval_response['created_at'].isoformat()
-    
-    return eval_response
+        
+        # Check if OpenAI client is available
+        if not openai_client:
+            logger.error("OpenAI client not configured for evaluation")
+            raise HTTPException(status_code=500, detail="AI service not configured. Please set OPENAI_API_KEY or EMERGENT_LLM_KEY.")
+        
+        # Generate evaluation using OpenAI
+        logger.info(f"Generating evaluation for interview {interview_id}")
+        
+        try:
+            response = await openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an expert interview evaluator. Provide detailed, constructive feedback in JSON format."},
+                    {"role": "user", "content": eval_prompt}
+                ],
+                temperature=0.7,
+                max_tokens=1000,
+                response_format={"type": "json_object"}
+            )
+            
+            eval_response = response.choices[0].message.content
+            logger.info("Successfully generated evaluation from AI")
+            
+        except Exception as ai_error:
+            logger.error(f"AI evaluation failed: {str(ai_error)}")
+            raise HTTPException(status_code=500, detail=f"Failed to generate AI evaluation: {str(ai_error)}")
+        
+        # Parse evaluation response
+        import json
+        try:
+            eval_data = json.loads(eval_response)
+        except json.JSONDecodeError as json_error:
+            logger.error(f"Failed to parse AI response as JSON: {eval_response}")
+            raise HTTPException(status_code=500, detail="AI returned invalid response format")
+        
+        # Validate required fields
+        required_fields = ['overall_score', 'communication_score', 'technical_score', 
+                          'problem_solving_score', 'strengths', 'areas_for_improvement', 'detailed_feedback']
+        missing_fields = [field for field in required_fields if field not in eval_data]
+        if missing_fields:
+            logger.error(f"AI response missing fields: {missing_fields}")
+            raise HTTPException(status_code=500, detail=f"AI response missing required fields: {missing_fields}")
+        
+        evaluation = Evaluation(
+            id=str(uuid.uuid4()),
+            interview_id=interview_id,
+            overall_score=eval_data['overall_score'],
+            communication_score=eval_data['communication_score'],
+            technical_score=eval_data['technical_score'],
+            problem_solving_score=eval_data['problem_solving_score'],
+            strengths=eval_data['strengths'],
+            areas_for_improvement=eval_data['areas_for_improvement'],
+            detailed_feedback=eval_data['detailed_feedback']
+        )
+        
+        eval_dict = evaluation.model_dump()
+        eval_dict['created_at'] = eval_dict['created_at'].isoformat()
+        await db.evaluations.insert_one(eval_dict)
+        
+        logger.info(f"Evaluation saved for interview {interview_id}")
+        
+        # Update interview status
+        await db.interview_sessions.update_one(
+            {"id": interview_id},
+            {"$set": {"status": "evaluated"}}
+        )
+        
+        # Return evaluation with ISO formatted datetime
+        eval_response = evaluation.model_dump()
+        eval_response['created_at'] = eval_response['created_at'].isoformat()
+        
+        return eval_response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in evaluate_interview: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @api_router.get("/interviews/{interview_id}/evaluation")
 async def get_evaluation(interview_id: str, session_token: Optional[str] = Cookie(None), authorization: Optional[str] = Header(None)):
@@ -812,7 +1238,7 @@ async def nlp_predict(payload: Dict[str, Any], session_token: Optional[str] = Co
     return trainer.predict_reply(text, top_k=top_k)
 
 # Configure CORS origins BEFORE adding middleware
-cors_origins = os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',')
+cors_origins = os.environ.get('CORS_ORIGINS', 'http://localhost:3000,http://localhost:3001').split(',')
 cors_origins = [origin.strip() for origin in cors_origins]  # Remove whitespace
 
 # Add CORS Middleware FIRST (before including router)
@@ -820,7 +1246,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
