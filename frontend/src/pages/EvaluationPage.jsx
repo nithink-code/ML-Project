@@ -12,29 +12,54 @@ import {
   AlertCircle,
   CheckCircle2,
 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from '@/components/ui/sonner';
 
 const EvaluationPage = ({ user }) => {
   const { interviewId } = useParams();
   const navigate = useNavigate();
   const [evaluation, setEvaluation] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     fetchEvaluation();
   }, [interviewId]);
 
   const fetchEvaluation = async () => {
-    try {
-      const response = await api.get(
-        `/api/interviews/${interviewId}/evaluation`
-      );
-      setEvaluation(response.data);
-    } catch (error) {
-      console.error("Failed to fetch evaluation:", error);
-      toast.error("Failed to load evaluation");
-    } finally {
-      setLoading(false);
+    let retryCount = 0;
+    const maxRetries = 3;
+
+    const tryFetchEvaluation = async () => {
+      try {
+        const response = await api.get(
+          `/api/interviews/${interviewId}/evaluation`
+        );
+        setEvaluation(response.data);
+        setLoading(false);
+        return true;
+      } catch (error) {
+        console.error("Attempt failed:", error);
+        if (error.response?.status === 404 || error.response?.status === 500) {
+          if (retryCount < maxRetries) {
+            retryCount++;
+            console.log(`Retrying... Attempt ${retryCount} of ${maxRetries}`);
+            toast.info("Generating evaluation...");
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds between retries
+            return false;
+          }
+          toast.error("Failed to generate evaluation after multiple attempts");
+        } else {
+          toast.error(error.response?.data?.detail || "Failed to load evaluation");
+        }
+        setLoading(false);
+        setError(error.response?.data?.detail || "Could not load or generate evaluation");
+        return true;
+      }
+    };
+
+    while (!await tryFetchEvaluation() && retryCount < maxRetries) {
+      // Keep trying until success or max retries reached
+      continue;
     }
   };
 
@@ -60,13 +85,27 @@ const EvaluationPage = ({ user }) => {
     );
   }
 
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <p className="text-red-600 mb-4">{error}</p>
+          <Button onClick={() => navigate("/dashboard")}>
+            Go to Dashboard
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   if (!evaluation) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
-          <p className="text-gray-600 mb-4">Evaluation not found</p>
+          <p className="text-gray-600 mb-4">Generating evaluation...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mx-auto mb-4"></div>
           <Button onClick={() => navigate("/dashboard")}>
-            Go to Dashboard
+            Back to Dashboard
           </Button>
         </div>
       </div>
@@ -110,9 +149,8 @@ const EvaluationPage = ({ user }) => {
                 data-testid="overall-score"
               >
                 <span className={getScoreColor(evaluation.overall_score)}>
-                  {Math.round(evaluation.overall_score)}
+                  {Math.round(evaluation.overall_score)}%
                 </span>
-                <span className="text-3xl text-gray-400">/100</span>
               </div>
               <Progress
                 value={evaluation.overall_score}
@@ -137,7 +175,7 @@ const EvaluationPage = ({ user }) => {
                       evaluation.communication_score
                     )}`}
                   >
-                    {Math.round(evaluation.communication_score)}/100
+                    {Math.round(evaluation.communication_score)}%
                   </span>
                 </div>
                 <Progress
@@ -154,7 +192,7 @@ const EvaluationPage = ({ user }) => {
                       evaluation.technical_score
                     )}`}
                   >
-                    {Math.round(evaluation.technical_score)}/100
+                    {Math.round(evaluation.technical_score)}%
                   </span>
                 </div>
                 <Progress value={evaluation.technical_score} className="h-3" />
@@ -167,8 +205,8 @@ const EvaluationPage = ({ user }) => {
                     className={`font-bold ${getScoreColor(
                       evaluation.problem_solving_score
                     )}`}
-                  >
-                    {Math.round(evaluation.problem_solving_score)}/100
+                    >
+                    {Math.round(evaluation.problem_solving_score)}%
                   </span>
                 </div>
                 <Progress
@@ -254,7 +292,7 @@ const EvaluationPage = ({ user }) => {
         <div className="flex justify-center mt-8 space-x-4">
           <Button
             data-testid="view-interview-button"
-            onClick={() => navigate(`/interview/${id}`)}
+            onClick={() => navigate(`/interview/${interviewId}`)}
             variant="outline"
             className="px-6 py-3"
           >

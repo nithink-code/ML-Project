@@ -1,0 +1,21 @@
+{
+    "version": "1.0",
+    "data": [
+        {
+            "text": "What is machine learning?",
+            "label": "technical"
+        },
+        {
+            "text": "Tell me about your experience with team projects",
+            "label": "behavioral"
+        },
+        {
+            "text": "Explain the difference between supervised and unsupervised learning",
+            "label": "technical"
+        },
+        {
+            "text": "How do you handle conflicts in a team?",
+            "label": "behavioral"
+        }
+    ]
+}

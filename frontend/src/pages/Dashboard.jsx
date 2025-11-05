@@ -19,7 +19,7 @@ import {
   CheckCircle,
   Star,
 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from '@/components/ui/sonner';
 
 const Dashboard = ({ user, setUser }) => {
   const navigate = useNavigate();

@@ -99,10 +99,64 @@ def calculate_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray) -> np.nda
         true_idx = class_to_idx[true_label]
         pred_idx = class_to_idx[pred_label]
         cm[true_idx, pred_idx] += 1
-    
     return cm
 
-
+def cross_validate(model, X: np.ndarray, y: np.ndarray, k_folds: int = 5) -> Dict[str, Any]:
+    """
+    Perform k-fold cross validation
+    
+    Args:
+        model: Model object with fit and predict methods
+        X: Features array
+        y: Labels array
+        k_folds: Number of folds for cross-validation
+        
+    Returns:
+        Dict containing mean and per-fold metrics
+    """
+    if len(X) != len(y):
+        raise ValueError("X and y must have the same length")
+        
+    fold_size = len(X) // k_folds
+    metrics_per_fold = []
+    
+    for i in range(k_folds):
+        # Split data into train and validation
+        start_idx = i * fold_size
+        end_idx = start_idx + fold_size
+        
+        X_val = X[start_idx:end_idx]
+        y_val = y[start_idx:end_idx]
+        
+        X_train = np.concatenate([X[:start_idx], X[end_idx:]])
+        y_train = np.concatenate([y[:start_idx], y[end_idx:]])
+        
+        # Train and predict
+        model.fit(X_train)
+        y_pred = model.predict(X_val)
+        
+        # Calculate metrics
+        fold_metrics = {
+            'accuracy': calculate_accuracy(y_val, y_pred),
+            **calculate_precision_recall_f1(y_val, y_pred)
+        }
+        metrics_per_fold.append(fold_metrics)
+    
+    # Calculate mean metrics
+    mean_metrics = {}
+    for metric in metrics_per_fold[0].keys():
+        values = [fold[metric] for fold in metrics_per_fold]
+        mean_metrics[metric] = {
+            'mean': np.mean(values),
+            'std': np.std(values)
+        }
+    
+    return {
+        'mean_metrics': mean_metrics,
+        'fold_metrics': metrics_per_fold
+    }
+    
+    
 def calculate_mse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """Calculate Mean Squared Error"""
     return np.mean((y_true - y_pred) ** 2)

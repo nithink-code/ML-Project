@@ -1,28 +1,52 @@
-import { useTheme } from "next-themes"
-import { Toaster as Sonner, toast } from "sonner"
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
-const Toaster = ({
-  ...props
-}) => {
-  const { theme = "system" } = useTheme()
+const toastConfig = {
+  position: "top-center",
+  autoClose: 3000,
+  hideProgressBar: true,
+  closeOnClick: true,
+  pauseOnHover: false,
+  draggable: false,
+  progress: undefined,
+};
 
+function Toaster() {
   return (
-    <Sonner
-      theme={theme}
-      className="toaster group"
-      toastOptions={{
-        classNames: {
-          toast:
-            "group toast group-[.toaster]:bg-background group-[.toaster]:text-foreground group-[.toaster]:border-border group-[.toaster]:shadow-lg",
-          description: "group-[.toast]:text-muted-foreground",
-          actionButton:
-            "group-[.toast]:bg-primary group-[.toast]:text-primary-foreground",
-          cancelButton:
-            "group-[.toast]:bg-muted group-[.toast]:text-muted-foreground",
-        },
-      }}
-      {...props} />
+    <ToastContainer
+      position="top-center"
+      autoClose={3000}
+      limit={1}
+      hideProgressBar
+      newestOnTop
+      closeOnClick
+      rtl={false}
+      pauseOnFocusLoss={false}
+      draggable={false}
+      pauseOnHover={false}
+      theme="light"
+      className="!top-4"
+    />
   );
 }
 
-export { Toaster, toast }
+const customToast = {
+  success: (message) => {
+    toast.dismiss();
+    toast.success(message, toastConfig);
+  },
+  error: (message) => {
+    toast.dismiss();
+    toast.error(message, toastConfig);
+  },
+  info: (message) => {
+    toast.dismiss();
+    toast.info(message, toastConfig);
+  },
+  warning: (message) => {
+    toast.dismiss();
+    toast.warning(message, toastConfig);
+  }
+};
+
+export { Toaster, customToast as toast };

@@ -3,7 +3,7 @@
 import * as React from "react"
 
 const TOAST_LIMIT = 1
-const TOAST_REMOVE_DELAY = 1000000
+const TOAST_REMOVE_DELAY = 3000
 
 const actionTypes = {
   ADD_TOAST: "ADD_TOAST",
@@ -40,9 +40,13 @@ const addToRemoveQueue = (toastId) => {
 export const reducer = (state, action) => {
   switch (action.type) {
     case "ADD_TOAST":
+      // Dismiss any existing toasts before adding new one
+      state.toasts.forEach((toast) => {
+        if (toast.open) dispatch({ type: "DISMISS_TOAST", toastId: toast.id });
+      });
       return {
         ...state,
-        toasts: [action.toast, ...state.toasts].slice(0, TOAST_LIMIT),
+        toasts: [action.toast].slice(0, TOAST_LIMIT),
       };
 
     case "UPDATE_TOAST":

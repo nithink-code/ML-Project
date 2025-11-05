@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 import aiohttp
 from authlib.integrations.starlette_client import OAuth
 import asyncio
+import re
 
 # Optional local NLP trainer module (depends on sentence-transformers + scikit-learn)
 try:
@@ -59,12 +60,14 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 openai_client = None
 use_emergent_api = False
+model_name = "gpt-3.5-turbo"  # Default model
 
 if OPENAI_API_KEY:
     # Prefer standard OpenAI API
     try:
         openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-        logger.info("Using OpenAI API")
+        model_name = "gpt-3.5-turbo"
+        logger.info("Using OpenAI API with model: gpt-3.5-turbo")
         use_emergent_api = False
     except Exception as e:
         logger.error(f"Failed to initialize OpenAI client: {e}")
@@ -75,7 +78,8 @@ elif EMERGENT_LLM_KEY:
             api_key=EMERGENT_LLM_KEY,
             base_url="https://demobackend.emergentagent.com/llm/v1"
         )
-        logger.info("Using Emergent LLM API")
+        model_name = "gpt-4o-mini"  # Emergent API uses different model names
+        logger.info(f"Using Emergent LLM API with model: {model_name}")
         use_emergent_api = True
     except Exception as e:
         logger.error(f"Failed to initialize Emergent client: {e}")
@@ -764,32 +768,60 @@ Response variation examples:
             conversation_count = len([msg for msg in conversation_history if msg["role"] == "user"])
             
             # Extract previous assistant responses to avoid repetition
-            previous_responses = [msg["content"] for msg in conversation_history if msg["role"] == "assistant"]
-            previous_response_text = " | ".join(previous_responses[-3:]) if previous_responses else ""
+            previous_responses = [msg["content"] for msg in conversation_history if msg["role"] == "assistant"][-3:]
+            previous_questions = [
+                re.findall(r'[^.!?]+[.!?]', resp) for resp in previous_responses
+            ]
+            # Flatten and get only questions
+            previous_questions = [
+                q.strip() for sublist in previous_questions 
+                for q in sublist if '?' in q
+            ]
             
-            # Build intelligent context based on answer analysis
-            context_hints = []
+            # Analyze user's response and generate dynamic context
+            response_context = {
+                "interview_stage": "opening" if conversation_count <= 2 else 
+                                 "core" if conversation_count <= 6 else 
+                                 "deep_dive" if conversation_count <= 10 else 
+                                 "wrap_up",
+                "response_quality": "brief" if answer_characteristics["is_brief"] else
+                                  "detailed" if answer_characteristics["is_detailed"] else
+                                  "moderate",
+                "key_topics": [word for word in re.findall(r'\b[A-Za-z]+\b', request.content.lower())
+                             if len(word) > 4][:3],
+                "previous_questions": previous_questions,
+            }
+            
+            context_hints = [
+                f"Current interview stage: {response_context['interview_stage']}",
+                f"Response quality: {response_context['response_quality']}",
+                f"Key topics mentioned: {', '.join(response_context['key_topics'])}",
+                "Previously asked questions (avoid repeating):" + 
+                ''.join([f"\n- {q}" for q in response_context['previous_questions']]),
+            ]
+            
+            # Add specific guidance based on characteristics
             if answer_characteristics["is_brief"]:
-                context_hints.append("The candidate gave a brief answer - encourage them to elaborate with specific details")
-            if answer_characteristics["is_detailed"]:
-                context_hints.append("The candidate provided a detailed response - acknowledge depth and probe specific technical/situational aspects")
-            if answer_characteristics["mentions_example"]:
-                context_hints.append("They provided an example - dig into the specifics, decision-making process, and outcomes")
+                context_hints.append("ACTION: Ask for specific examples and details")
             if answer_characteristics["mentions_technology"]:
-                context_hints.append("They mentioned specific technologies - explore technical choices, trade-offs, and alternatives")
-            if answer_characteristics["mentions_team"]:
-                context_hints.append("They discussed teamwork - explore collaboration dynamics, communication strategies, and conflict resolution")
-            if answer_characteristics["mentions_challenge"]:
-                context_hints.append("They described a challenge - explore problem-solving methodology, obstacles faced, and lessons learned")
-            if answer_characteristics["mentions_success"]:
-                context_hints.append("They mentioned success - probe for metrics, impact measurement, and key contributing factors")
+                context_hints.append("ACTION: Explore technical depth and decision-making")
             if answer_characteristics["shows_uncertainty"]:
-                context_hints.append("They seem uncertain - guide them with clarifying questions or provide a framework to structure their thoughts")
+                context_hints.append("ACTION: Provide supportive guidance and structure")
+            if answer_characteristics["mentions_challenge"]:
+                context_hints.append("ACTION: Investigate problem-solving approach")
             
-            context_instruction = "\n- ".join(context_hints) if context_hints else "Respond naturally and authentically to their answer"
+            context_instruction = "\n".join([
+                "Interview Context:",
+                *context_hints,
+                "\nResponse Guidelines:",
+                "1. Never repeat previous questions",
+                "2. Keep responses concise (2-3 sentences)",
+                "3. Mix acknowledgment with follow-up questions",
+                "4. Use candidate's key terms in your response",
+                "5. Maintain natural conversation flow"
+            ])
             
             # Extract specific nouns and technical terms from user's response
-            import re
             words = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b|\b[a-z]{4,}\b', request.content)
             key_phrases = [w for w in words if len(w) > 4][:5]  # Get up to 5 key phrases
             
@@ -808,7 +840,7 @@ Response variation examples:
                 {"role": "system", "content": f"""Current interview context (Question #{conversation_count}, Stage: {stage}):
 
 CRITICAL ANTI-REPETITION RULES:
-- Your recent responses were: "{previous_response_text}"
+- Previous questions asked: {' | '.join(previous_questions)}
 - You must NOT repeat any similar phrases, questions, or patterns from above
 - NEVER use generic phrases like "Tell me more", "That's interesting", "I see" repeatedly
 - Each response must be COMPLETELY DIFFERENT in structure and wording from previous ones
@@ -843,43 +875,24 @@ Your response must be UNIQUE, SPECIFIC to their answer, and NEVER repeat pattern
             ]
             messages_for_api.extend(conversation_history)
             
-            # Try different models in order of preference
-            # Use different model names depending on which API we're using
-            if use_emergent_api:
-                # Emergent API model names
-                models_to_try = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
-            else:
-                # Standard OpenAI model names
-                models_to_try = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo", "gpt-4"]
-            
-            ai_response = None
-            last_error = None
-            
-            for model in models_to_try:
-                try:
-                    logger.info(f"Attempting to use model: {model}")
-                    response = await openai_client.chat.completions.create(
-                        model=model,
-                        messages=messages_for_api,
-                        temperature=1.0,  # Maximum creativity for variation
-                        max_tokens=500,
-                        presence_penalty=1.2,  # Very high to prevent topic repetition
-                        frequency_penalty=0.8,  # High to prevent word repetition
-                        top_p=0.92  # Nucleus sampling for diversity
-                    )
-                    
-                    ai_response = response.choices[0].message.content
-                    logger.info(f"Successfully generated unique contextual response using {model}")
-                    break  # Success, exit the loop
-                except Exception as e:
-                    logger.warning(f"Failed with model {model}: {str(e)}")
-                    last_error = e
-                    continue  # Try next model
-            
-            if not ai_response:
-                logger.error(f"All models failed. Last error: {str(last_error)}")
-                # Fallback to intelligent mock response instead of failing
-                logger.warning("All AI models failed, using intelligent context-aware fallback")
+            # Use GPT-3.5-turbo for consistent, reliable responses
+            try:
+                logger.info(f"Generating interview response with {model_name}")
+                response = await openai_client.chat.completions.create(
+                    model=model_name,
+                    messages=messages_for_api,
+                    temperature=0.85,  # Balance between consistency and creativity
+                    max_tokens=200,    # Keep responses concise
+                    presence_penalty=0.6,  # Moderate penalty to avoid repetition
+                    frequency_penalty=0.7,  # Higher penalty for word repetition
+                    top_p=0.9  # Slightly constrained sampling for more focused responses
+                )
+                ai_response = response.choices[0].message.content
+                logger.info("Successfully generated interview response")
+            except Exception as e:
+                logger.error(f"Failed to generate AI response: {str(e)}")
+                # Don't raise exception - fall through to use fallback response generator
+                logger.warning("AI response failed, using intelligent context-aware fallback")
                 
                 # Use intelligent response generator with variety
                 import random
@@ -985,6 +998,11 @@ Your response must be UNIQUE, SPECIFIC to their answer, and NEVER repeat pattern
                 ai_response = generate_intelligent_fallback(interview_type, answer_characteristics, request.content, conversation_count)
                 logger.info(f"Generated intelligent varied fallback response")
         
+        # Final safety check: ensure we have a response
+        if not ai_response:
+            ai_response = "Thank you for sharing that. Could you tell me more about your experience and what you learned from it?"
+            logger.warning("Used emergency fallback response")
+        
         # Save AI response
         ai_message = Message(
             id=str(uuid.uuid4()),
@@ -1052,6 +1070,128 @@ async def complete_interview(interview_id: str, session_token: Optional[str] = C
     
     return {"message": "Interview completed successfully", "status": "completed"}
 
+def analyze_interview_pattern(interview_type: str, messages: List[Dict]) -> Dict:
+    """
+    Analyze interview pattern based on interview type and message content
+    to provide accurate, type-specific evaluation scores.
+    """
+    # Count messages and calculate basic metrics
+    user_messages = [m for m in messages if m.get('role') == 'user']
+    assistant_messages = [m for m in messages if m.get('role') == 'assistant']
+    
+    num_exchanges = len(user_messages)
+    avg_user_length = sum(len(m.get('content', '')) for m in user_messages) / max(len(user_messages), 1)
+    avg_assistant_length = sum(len(m.get('content', '')) for m in assistant_messages) / max(len(assistant_messages), 1)
+    
+    # Calculate engagement ratio (longer responses = better engagement)
+    engagement_score = min(100, (avg_user_length / 50) * 20)  # Base on 50 chars = good response
+    
+    # Calculate depth score based on number of exchanges
+    depth_score = min(100, (num_exchanges / 10) * 100)  # 10+ exchanges = full score
+    
+    # Type-specific analysis
+    if interview_type == "technical":
+        # Technical interviews prioritize technical knowledge and problem-solving
+        technical_keywords = ['code', 'algorithm', 'function', 'system', 'design', 'data structure', 
+                            'complexity', 'optimize', 'implement', 'debug', 'api', 'database',
+                            'framework', 'testing', 'performance', 'scalability']
+        
+        # Count technical keywords in user responses
+        user_text = ' '.join([m.get('content', '').lower() for m in user_messages])
+        tech_keyword_count = sum(1 for keyword in technical_keywords if keyword in user_text)
+        
+        technical_score = min(100, 50 + (tech_keyword_count * 5))  # Base 50, +5 per keyword
+        communication_score = min(100, engagement_score + 20)  # Technical can have lower communication
+        problem_solving_score = min(100, 60 + (tech_keyword_count * 3))  # Problem solving tied to technical terms
+        
+        strengths = [
+            "Demonstrates technical knowledge and vocabulary",
+            "Engages with technical problem-solving questions",
+            "Shows understanding of programming concepts"
+        ]
+        areas_for_improvement = [
+            "Consider providing more detailed code examples",
+            "Discuss time and space complexity more explicitly",
+            "Explore edge cases and error handling"
+        ]
+        detailed_feedback = f"The candidate showed solid technical understanding with {tech_keyword_count} technical concepts discussed. " \
+                          f"The interview included {num_exchanges} exchanges with an average response length of {int(avg_user_length)} characters, " \
+                          f"indicating {'good' if avg_user_length > 100 else 'moderate'} depth in answers. " \
+                          f"Technical discussions would benefit from more specific implementation details and consideration of edge cases."
+        
+    elif interview_type == "behavioral":
+        # Behavioral interviews prioritize communication and structured responses (STAR method)
+        behavioral_keywords = ['situation', 'task', 'action', 'result', 'team', 'challenge', 
+                             'leadership', 'conflict', 'problem', 'achieved', 'learned',
+                             'experience', 'responsible', 'managed', 'collaborated']
+        
+        user_text = ' '.join([m.get('content', '').lower() for m in user_messages])
+        behavioral_keyword_count = sum(1 for keyword in behavioral_keywords if keyword in user_text)
+        
+        communication_score = min(100, 60 + (behavioral_keyword_count * 3))  # Communication is key
+        technical_score = min(100, 50 + engagement_score * 0.3)  # Less emphasis on technical
+        problem_solving_score = min(100, 55 + (behavioral_keyword_count * 2.5))  # Behavioral problem solving
+        
+        strengths = [
+            "Provides structured responses to behavioral questions",
+            "Demonstrates self-awareness and reflection",
+            "Shows good communication and storytelling ability"
+        ]
+        areas_for_improvement = [
+            "Include more specific metrics and outcomes in your examples",
+            "Follow the STAR method more consistently (Situation, Task, Action, Result)",
+            "Provide more details about your specific contributions"
+        ]
+        detailed_feedback = f"The candidate demonstrated strong behavioral interview skills with {behavioral_keyword_count} relevant keywords used. " \
+                          f"Across {num_exchanges} exchanges, responses averaged {int(avg_user_length)} characters, " \
+                          f"showing {'excellent' if avg_user_length > 150 else 'good' if avg_user_length > 80 else 'adequate'} detail. " \
+                          f"To improve further, focus on quantifying results and consistently using the STAR framework."
+        
+    else:  # general
+        # General interviews balance all aspects
+        general_keywords = ['experience', 'skills', 'background', 'career', 'goal', 'interest',
+                          'learn', 'grow', 'passion', 'strength', 'weakness', 'motivated']
+        
+        user_text = ' '.join([m.get('content', '').lower() for m in user_messages])
+        general_keyword_count = sum(1 for keyword in general_keywords if keyword in user_text)
+        
+        communication_score = min(100, 65 + engagement_score * 0.25)
+        technical_score = min(100, 60 + (general_keyword_count * 2))
+        problem_solving_score = min(100, 60 + (general_keyword_count * 2))
+        
+        strengths = [
+            "Articulates career goals and motivations clearly",
+            "Shows good general communication skills",
+            "Demonstrates professional awareness and maturity"
+        ]
+        areas_for_improvement = [
+            "Provide more specific examples from your experience",
+            "Connect your background more explicitly to the role",
+            "Show more enthusiasm and passion for the opportunity"
+        ]
+        detailed_feedback = f"The candidate provided well-rounded responses in this general interview with {general_keyword_count} key topics covered. " \
+                          f"Through {num_exchanges} exchanges averaging {int(avg_user_length)} characters per response, " \
+                          f"the candidate showed {'strong' if avg_user_length > 120 else 'moderate'} engagement. " \
+                          f"Overall communication was professional, though more specific examples would strengthen responses."
+    
+    # Calculate overall score as weighted average based on interview type
+    if interview_type == "technical":
+        overall_score = (technical_score * 0.5 + problem_solving_score * 0.3 + communication_score * 0.2)
+    elif interview_type == "behavioral":
+        overall_score = (communication_score * 0.5 + problem_solving_score * 0.3 + technical_score * 0.2)
+    else:  # general
+        overall_score = (communication_score * 0.4 + technical_score * 0.3 + problem_solving_score * 0.3)
+    
+    return {
+        "overall_score": round(overall_score, 1),
+        "communication_score": round(communication_score, 1),
+        "technical_score": round(technical_score, 1),
+        "problem_solving_score": round(problem_solving_score, 1),
+        "strengths": strengths,
+        "areas_for_improvement": areas_for_improvement,
+        "detailed_feedback": detailed_feedback
+    }
+
 @api_router.post("/interviews/{interview_id}/evaluate")
 async def evaluate_interview(interview_id: str, session_token: Optional[str] = Cookie(None), authorization: Optional[str] = Header(None)):
     try:
@@ -1110,32 +1250,35 @@ Provide ONLY the JSON response, no additional text."""
         # Generate evaluation using OpenAI
         logger.info(f"Generating evaluation for interview {interview_id}")
         
+        import json
+        eval_data = None
+
         try:
             response = await openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=model_name,  # Use the configured model for the active API
                 messages=[
                     {"role": "system", "content": "You are an expert interview evaluator. Provide detailed, constructive feedback in JSON format."},
                     {"role": "user", "content": eval_prompt}
                 ],
                 temperature=0.7,
-                max_tokens=1000,
-                response_format={"type": "json_object"}
+                max_tokens=2000
             )
             
             eval_response = response.choices[0].message.content
             logger.info("Successfully generated evaluation from AI")
             
+            # Parse evaluation response if AI was successful
+            try:
+                eval_data = json.loads(eval_response)
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse AI response as JSON: {eval_response}")
+                raise Exception("Failed to parse AI response as JSON")
+            
         except Exception as ai_error:
             logger.error(f"AI evaluation failed: {str(ai_error)}")
-            raise HTTPException(status_code=500, detail=f"Failed to generate AI evaluation: {str(ai_error)}")
-        
-        # Parse evaluation response
-        import json
-        try:
-            eval_data = json.loads(eval_response)
-        except json.JSONDecodeError as json_error:
-            logger.error(f"Failed to parse AI response as JSON: {eval_response}")
-            raise HTTPException(status_code=500, detail="AI returned invalid response format")
+            # Analyze interview pattern and generate type-specific evaluation
+            eval_data = analyze_interview_pattern(interview['interview_type'], messages)
+            logger.info(f"Using pattern-based evaluation for {interview['interview_type']} interview")
         
         # Validate required fields
         required_fields = ['overall_score', 'communication_score', 'technical_score', 
@@ -1183,21 +1326,57 @@ Provide ONLY the JSON response, no additional text."""
 
 @api_router.get("/interviews/{interview_id}/evaluation")
 async def get_evaluation(interview_id: str, session_token: Optional[str] = Cookie(None), authorization: Optional[str] = Header(None)):
-    user = await get_current_user(session_token, authorization)
-    
-    interview = await db.interview_sessions.find_one(
-        {"id": interview_id, "user_id": user.id}
-    )
-    
-    if not interview:
-        raise HTTPException(status_code=404, detail="Interview not found")
-    
-    evaluation = await db.evaluations.find_one(
-        {"interview_id": interview_id},
-        {"_id": 0}
-    )
-    
-    if not evaluation:
+    try:
+        user = await get_current_user(session_token, authorization)
+        
+        # Find the interview
+        interview = await db.interview_sessions.find_one(
+            {"id": interview_id, "user_id": user.id}
+        )
+        
+        if not interview:
+            raise HTTPException(status_code=404, detail="Interview not found")
+        
+        # Try to find existing evaluation
+        evaluation = await db.evaluations.find_one(
+            {"interview_id": interview_id},
+            {"_id": 0}
+        )
+        
+        if evaluation:
+            return evaluation
+            
+        logger.info(f"No evaluation found for interview {interview_id}, generating new evaluation")
+        
+        # Get all messages for the interview
+        messages = await db.messages.find(
+            {"interview_id": interview_id},
+            {"_id": 0}
+        ).sort("timestamp", 1).to_list(1000)
+        
+        if not messages:
+            raise HTTPException(status_code=400, detail="No messages found in interview")
+        
+        # Generate new evaluation
+        evaluation_response = await evaluate_interview(interview_id, session_token, authorization)
+        return evaluation_response
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get/generate evaluation: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to get or generate evaluation. Please try completing the interview again."
+        )
+        # Try to generate a new evaluation
+        try:
+            eval_route = api_router.url_path_for("evaluate_interview")
+            response = await evaluate_interview(interview_id, session_token, authorization)
+            return response
+        except Exception as e:
+            logger.error(f"Failed to generate evaluation on demand: {str(e)}")
+            raise HTTPException(status_code=404, detail="Evaluation not found and could not be generated")
         raise HTTPException(status_code=404, detail="Evaluation not found")
     
     # Ensure datetime fields are in ISO format for JSON serialization

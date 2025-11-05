@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Send, Mic, MicOff, BarChart3, Loader2 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from '@/components/ui/sonner';
 
 const InterviewPage = ({ user }) => {
   const { interviewId } = useParams();
@@ -236,9 +236,26 @@ const InterviewPage = ({ user }) => {
       // Update local interview state to prevent further messages
       setInterview((prev) => ({ ...prev, status: "completed" }));
 
-      // Show completion message and redirect to dashboard
-      toast.success("Interview completed successfully!");
-      navigate("/dashboard");
+      try {
+        // Generate evaluation
+        const evalResponse = await api.post(`/api/interviews/${interviewId}/evaluate`);
+        
+        if (evalResponse.data) {
+          // Show completion message and redirect to evaluation page
+          toast.success("Interview completed! Redirecting to evaluation results...");
+          // Add a small delay to ensure the evaluation is saved
+          setTimeout(() => {
+            navigate(`/evaluation/${interviewId}`);
+          }, 2000);
+        }
+      } catch (evalError) {
+        console.error("Evaluation generation failed:", evalError);
+        toast.success("Interview completed! Redirecting to evaluation page...");
+        // Still redirect to evaluation page, it will handle the evaluation generation
+        setTimeout(() => {
+          navigate(`/evaluation/${interviewId}`);
+        }, 2000);
+      }
     } catch (error) {
       console.error("Failed to complete interview:", error);
 
@@ -372,13 +389,20 @@ const InterviewPage = ({ user }) => {
       {/* Input */}
       <div className="glass border-t sticky bottom-0">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          {interview?.status === "completed" ||
+                {interview?.status === "completed" ||
           interview?.status === "evaluated" ? (
             <div className="text-center py-3">
-              <p className="text-gray-600 font-medium">
-                Interview has been completed. View your evaluation for detailed
-                feedback.
-              </p>
+              <div className="space-y-2">
+                <p className="text-gray-600 font-medium">
+                  Interview has been completed.
+                </p>
+                <Button
+                  onClick={() => navigate(`/evaluation/${interviewId}`)}
+                  className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white"
+                >
+                  View Your Evaluation Results
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="flex items-center space-x-4">
